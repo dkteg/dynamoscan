@@ -1,0 +1,10 @@
+**/test
+*.egg-info/
+**/__pycache__/
+build
+**/test.*
+**/dynamoscan/test*
+**/.cache
+**/.pytest_cache
+**/.idea
+**/pwnd.txt

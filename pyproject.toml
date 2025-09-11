@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamoscan"
+version = "0.0.1"
+description = "A dynamic scanner Python module to detect suspicious system calls"
+authors = [
+    { name = "Dimitri K. Teguia", email = "mail@dkteg.de" }
+]
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Unix"
+]
+dependencies = [
+    "torch>=2.7.1",
+    "tensorflow-cpu>=2.20.0",
+    "tf-keras>=2.20.0",
+    "dill>=0.4.0",
+    "joblib>=1.5.2",
+    "cloudpickle>=3.1.1",
+    "pytest>=8.4.2"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dynamoscan*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["tests*", "examples*"]
+
+[tool.pytest.ini_options]
+pythonpath = "."
+
+[project.scripts]
+dynamoscan = "dynamoscan.cli:main"
