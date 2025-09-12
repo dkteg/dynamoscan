@@ -28,10 +28,12 @@ class Format(Enum):
     KERASv3 = 7
     NUMPY = 8
     SAVED_MODEL = 9
-    UNKNOWN = 10
+    CLOUDPICKLE = 10
+    UNKNOWN = 11
 
 
 def get_type(model_path) -> Format:
+    # NOTE: order of type check is very important!!!!
     import os
     if not os.path.exists(model_path):
         raise FileNotFoundError(model_path)
@@ -52,6 +54,8 @@ def get_type(model_path) -> Format:
         return Format.JOBLIB
     if is_dill(model_path):
         return Format.DILL
+    if is_cloudpickle(model_path):
+        return Format.CLOUDPICKLE
     if is_pickle(model_path):
         return Format.PICKLE
 
@@ -85,6 +89,17 @@ def _load_dill(model_path) -> None:
 
 def load_dill(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
     return _trace_func_call(FnContext(fn=_load_dill, args=(model_path,), warm_up=_lazy_dill_load, cwd=cwd))
+
+
+def _load_cloudpickle(model_path) -> None:
+    import cloudpickle
+    with open(model_path, "rb") as f:
+        return cloudpickle.load(f)
+
+
+def load_cloudpickle(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
+    return _trace_func_call(
+        FnContext(fn=_load_cloudpickle, args=(model_path,), warm_up=_lazy_cloudpickle_load, cwd=cwd))
 
 
 def _load_joblib(model_path) -> None:
@@ -175,12 +190,13 @@ TYPE2FUNC: Dict[Format, Callable[[str, Union[str, Path]], List[Union[Syscall, Si
     Format.PYTORCH: load_pytorch,
     Format.DILL: load_dill,
     Format.JOBLIB: load_joblib,
+    Format.CLOUDPICKLE: load_cloudpickle,
     Format.KERAS: load_keras,
     Format.KERASv2: load_keras_v2,
     Format.KERASv3: load_keras_v3,
     Format.NUMPY: load_numpy,
     Format.SAVED_MODEL: load_tf_saved_model,
-    Format.UNKNOWN: lambda _: [],
+    Format.UNKNOWN: lambda *args, **kwargs: [],
 }
 
 
@@ -193,10 +209,8 @@ def load_model(model_path: str, cwd: Optional[Union[str, Path]] = None) -> List[
 # ================================ Type detection ======================================================
 
 def is_pytorch(model_path: str) -> bool:
-    if is_pickle(model_path):
-        # some models with .bin may be raw pickle files
-        return False
-    if model_path.endswith((".bin", ".pt", ".pth", ".ckpt")):
+    # some models with .bin may be raw pickle files
+    if not is_pickle(model_path) and model_path.endswith((".bin", ".pt", ".pth", ".ckpt")):
         return True
 
     import zipfile
@@ -218,7 +232,7 @@ def is_pytorch(model_path: str) -> bool:
 
 
 def is_keras(model_path: str) -> bool:
-    return model_path.endswith((".keras", ".h5", ".hdf5", ".hdf", ".h5py"))
+    return not is_pickle(model_path) and model_path.endswith((".keras", ".h5", ".hdf5", ".hdf", ".h5py"))
 
 
 def is_keras_v2(model_path: str) -> bool:
@@ -258,9 +272,11 @@ def is_pickle(model_path: str) -> bool:
         return True
     try:
         with open(model_path, "rb") as fh:
-            header = fh.read(512)
-        if header[:2] in [b"\x80\x02", b"\x80\x03", b"\x80\x04", b"\x80\x05"]:
-            return True
+            b0 = fh.read(1)
+            if b0 != b"\x80":
+                return False
+            b1 = fh.read(1)
+            return len(b1) == 1 and 1 <= b1[0] <= 5
     except Exception as e:
         logger.error(f"Failed to verify if file is pickle: {model_path}: {e}", exc_info=True)
     return False
@@ -272,10 +288,22 @@ def is_dill(model_path: str) -> bool:
     try:
         with open(model_path, "rb") as fh:
             header = fh.read(512)
-        if header[:2] == b"\x80\x04":
+        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
             return b"dill._dill" in header
     except Exception as e:
         logger.error(f"Failed to verify if file is dill: {model_path}: {e}", exc_info=True)
+
+    return False
+
+
+def is_cloudpickle(model_path: str) -> bool:
+    try:
+        with open(model_path, "rb") as fh:
+            header = fh.read(512)
+        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
+            return b"cloudpickle.cloudpickle" in header
+    except Exception as e:
+        logger.error(f"Failed to verify if file is cloudpickle: {model_path}: {e}", exc_info=True)
 
     return False
 
@@ -285,8 +313,8 @@ def is_joblib(model_path: str):
         return True
     try:
         with open(model_path, "rb") as fh:
-            header = fh.read(512)
-        if header[:2] == b"\x80\x04":
+            header = fh.read(1024)
+        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
             return b"joblib" in header
     except Exception as e:
         logger.error(f"Failed to verify if file is joblib: {model_path}: {e}", exc_info=True)
@@ -295,7 +323,7 @@ def is_joblib(model_path: str):
 
 
 def is_numpy(model_path: str):
-    if model_path.endswith((".npy", ".npz",)):
+    if not is_pickle(model_path) and model_path.endswith((".npy", ".npz",)):
         return True
     try:
         with open(model_path, "rb") as f:
@@ -355,3 +383,8 @@ def _lazy_pickle_load() -> None:
 def _lazy_numpy_load() -> None:
     import numpy
     _ = numpy.load
+
+
+def _lazy_cloudpickle_load() -> None:
+    import cloudpickle
+    _ = cloudpickle.load
