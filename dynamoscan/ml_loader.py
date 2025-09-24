@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
+import zipfile
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Union, Literal, Optional
+from typing import Callable, List, Union, Literal, Optional
 
-from ._types import FnContext, Syscall, Signal
+from ._types import ModelLoader, Syscall, Signal
 from .isolated_tracer import Tracer
 
 logger = logging.getLogger("ml_loader")
 
 
-def _trace_func_call(fn: FnContext) -> List[Union[Syscall, Signal]]:
+def _trace_func_call(fn: ModelLoader) -> List[Union[Syscall, Signal]]:
     with Tracer(fn) as tracer:
         pass
 
@@ -23,37 +25,33 @@ class Format(Enum):
     PYTORCH = 2
     DILL = 3
     JOBLIB = 4
-    KERAS = 5
-    KERASv2 = 6
-    KERASv3 = 7
-    NUMPY = 8
-    SAVED_MODEL = 9
-    CLOUDPICKLE = 10
-    UNKNOWN = 11
+    KERASv2 = 5
+    KERASv3 = 6
+    NUMPY = 7
+    SAVED_MODEL = 8
+    CLOUDPICKLE = 9
+    UNKNOWN = 10
 
 
 def get_type(model_path) -> Format:
     # NOTE: order of type check is very important!!!!
-    import os
     if not os.path.exists(model_path):
         raise FileNotFoundError(model_path)
 
     if is_tf_saved_model(model_path):
         return Format.SAVED_MODEL
-    if is_keras(model_path):
-        if is_keras_v2(model_path):
-            return Format.KERASv2
-        if is_keras_v3(model_path):
-            return Format.KERASv3
-        return Format.KERAS
+    if is_keras_v2(model_path):
+        return Format.KERASv2
+    if is_keras_v3(model_path):
+        return Format.KERASv3
     if is_numpy(model_path):
         return Format.NUMPY
     if is_pytorch(model_path):
         return Format.PYTORCH
-    if is_joblib(model_path):
-        return Format.JOBLIB
     if is_dill(model_path):
         return Format.DILL
+    if is_joblib(model_path):
+        return Format.JOBLIB
     if is_cloudpickle(model_path):
         return Format.CLOUDPICKLE
     if is_pickle(model_path):
@@ -62,101 +60,96 @@ def get_type(model_path) -> Format:
     return Format.UNKNOWN
 
 
-def _load_pickle(model_path) -> None:
-    import pickle
-    with open(model_path, "rb") as f:
-        return pickle.load(f)
-
-
-def load_pickle(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_pickle, args=(model_path,), warm_up=_lazy_pickle_load, cwd=cwd))
-
-
-def _load_pytorch(model_path) -> None:
-    import torch
-    return torch.load(model_path, weights_only=False, map_location=torch.device("cpu"))
-
-
-def load_pytorch(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_pytorch, args=(model_path,), warm_up=_lazy_torch_load, cwd=cwd))
-
-
-def _load_dill(model_path) -> None:
-    import dill
-    with open(model_path, "rb") as f:
-        return dill.load(f)
-
-
-def load_dill(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_dill, args=(model_path,), warm_up=_lazy_dill_load, cwd=cwd))
-
-
-def _load_cloudpickle(model_path) -> None:
-    import cloudpickle
-    with open(model_path, "rb") as f:
-        return cloudpickle.load(f)
-
-
-def load_cloudpickle(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
+def trace_load(
+        load_func: Callable,
+        model_path: str,
+        cwd: Union[str, Path],
+        exec_context: Literal["fork", "spawn"] = "fork",
+        warmup: Callable | None = None,
+        warmup_args: tuple = ()
+) -> List[Union[Syscall, Signal]]:
     return _trace_func_call(
-        FnContext(fn=_load_cloudpickle, args=(model_path,), warm_up=_lazy_cloudpickle_load, cwd=cwd))
+        ModelLoader(load_func, model_path, cwd=cwd, exec_context=exec_context, warmup=warmup, warmup_args=warmup_args)
+    )
 
 
-def _load_joblib(model_path) -> None:
+def _load_model(model_path: str, cwd: Union[str, Path], model_format: Format) -> List[Union[Syscall, Signal]]:
+    if model_format == Format.PYTORCH:
+        return trace_load(_load_pytorch, model_path, cwd, warmup=_load_pickle_imports,
+                          warmup_args=(model_path,))
+    elif model_format == Format.KERASv2:
+        return trace_load(_load_keras_v2, model_path, cwd, warmup=_lazy_tf_load)
+    elif model_format == Format.KERASv3:
+        return trace_load(_load_keras_v3, model_path, cwd, warmup=_lazy_tf_load)
+    elif model_format == Format.NUMPY:
+        return trace_load(_load_numpy, model_path, cwd)
+    elif model_format == Format.SAVED_MODEL:
+        return trace_load(_load_tf_and_infer_with_dummy, model_path, cwd, "spawn", warmup=_lazy_tf_load)
+    elif model_format == Format.CLOUDPICKLE:
+        return trace_load(_load_cloudpickle, model_path, cwd, warmup=_load_pickle_imports,
+                          warmup_args=(model_path,))
+    elif model_format == Format.JOBLIB:
+        return trace_load(_load_joblib, model_path, cwd, warmup=_load_pickle_imports,
+                          warmup_args=(model_path,))
+    elif model_format == Format.DILL:
+        return trace_load(_load_dill, model_path, cwd, warmup=_load_pickle_imports, warmup_args=(model_path,))
+    elif model_format == Format.PICKLE:
+        return trace_load(_load_pickle, model_path, cwd, warmup=_load_pickle_imports,
+                          warmup_args=(model_path,))
+
+    # In case the format type is unknown we can safely assume that the file is neither a PyTorch model, a TF SavedModel
+    # a Keras model, nor a numpy format because the check are pretty robust. So we can safely fall back to assuming that
+    # it may be a pickle variant and load it to see what happens. For that purpose, we use dill, because dill is able to
+    # load every kind of pickle in-place replacements like joblib and cloudpickle and pickle itself.
+    return trace_load(_load_dill, model_path, cwd, warmup=_load_pickle_imports, warmup_args=(model_path,))
+
+
+def _load_file(model_path: str, module, markers):
+    with open(model_path, "rb") as f:
+        return _call_with_markers(markers, module.load, f)
+
+
+def _load_pickle(model_path: str, markers):
+    import pickle
+    return _load_file(model_path, pickle, markers)
+
+
+def _load_pytorch(model_path: str, markers):
+    import torch
+    return _call_with_markers(markers, torch.load, model_path, weights_only=False, map_location=torch.device("cpu"))
+
+
+def _load_dill(model_path, markers):
+    import dill
+    return _load_file(model_path, dill, markers)
+
+
+def _load_cloudpickle(model_path, markers):
+    import cloudpickle
+    return _load_file(model_path, cloudpickle, markers)
+
+
+def _load_joblib(model_path, markers):
     import joblib
-    return joblib.load(model_path)
+    _call_with_markers(markers, joblib.load, model_path)
 
 
-def load_joblib(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_joblib, args=(model_path,), warm_up=_lazy_joblib_load, cwd=cwd))
-
-
-def load_keras(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    trace: List[Union[Syscall, Signal]] = []
-
-    # Try Keras v2 (tf-keras)
-    try:
-        trace += load_keras_v2(model_path, cwd)
-    except Exception as e:
-        logger.debug("Keras v2 load failed: %r", e)
-
-    # Try Keras v3 (tf.keras)
-    try:
-        trace += load_keras_v3(model_path, cwd)
-    except Exception as e:
-        logger.debug("Keras v3 load failed: %r", e)
-
-    return trace
-
-
-def _load_keras_v2(model_path) -> None:
+def _load_keras_v2(model_path, markers):
     import tf_keras as keras
-    return keras.models.load_model(model_path, safe_mode=False, compile=False)
+    _call_with_markers(markers, keras.models.load_model, model_path, safe_mode=False, compile=False)
 
 
-def load_keras_v2(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_keras_v2, args=(model_path,), warm_up=_lazy_keras_v2_load, cwd=cwd))
+def _load_keras_v3(model_path, markers):
+    from tensorflow import keras
+    _call_with_markers(markers, keras.models.load_model, model_path, safe_mode=False, compile=False)
 
 
-def _load_keras_v3(model_path) -> None:
-    import tensorflow as tf
-    return tf.keras.models.load_model(model_path, safe_mode=False, compile=False)
-
-
-def load_keras_v3(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_keras_v3, args=(model_path,), warm_up=_lazy_tf_load, cwd=cwd))
-
-
-def _load_numpy(model_path) -> None:
+def _load_numpy(model_path, markers):
     import numpy as np
-    return np.load(model_path, allow_pickle=True)
+    _call_with_markers(markers, np.load, model_path, allow_pickle=True)
 
 
-def load_numpy(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(FnContext(fn=_load_numpy, args=(model_path,), warm_up=_lazy_numpy_load, cwd=cwd))
-
-
-def _load_tf_and_infer_with_dummy(model_path: str) -> None:
+def _load_tf_and_infer_with_dummy(model_path: str, markers) -> None:
     import tensorflow as tf
     import numpy as np
 
@@ -166,65 +159,41 @@ def _load_tf_and_infer_with_dummy(model_path: str) -> None:
             return tf.constant(np.full(shape, b"", dtype=object), dtype=tf.string)
         return tf.constant(np.zeros(shape, dtype=spec.dtype.as_numpy_dtype))
 
-    loaded = tf.saved_model.load(model_path)
-    if not getattr(loaded, "signatures", None):
-        return
-    signature_keys = list(loaded.signatures.keys())
-    if not signature_keys:
-        return
-    key = "serving_default" if "serving_default" in signature_keys else signature_keys[0]
-    infer = loaded.signatures[key]
-    _, kwargs = infer.structured_input_signature
-    dummy = {name: _zeros_like_spec(spec) for name, spec in kwargs.items()}
-    _ = infer(**dummy)
+    def _load_and_infer():
+        loaded = tf.saved_model.load(model_path)
+        if not getattr(loaded, "signatures", None):
+            return
+        signature_keys = list(loaded.signatures.keys())
+        if not signature_keys:
+            return
+        key = "serving_default" if "serving_default" in signature_keys else signature_keys[0]
+        infer = loaded.signatures[key]
+        _, kwargs = infer.structured_input_signature
+        dummy = {name: _zeros_like_spec(spec) for name, spec in kwargs.items()}
+        _ = infer(**dummy)
+
+    _call_with_markers(markers, _load_and_infer)
 
 
-def load_tf_saved_model(model_path: str, cwd: Union[str, Path]) -> List[Union[Syscall, Signal]]:
-    return _trace_func_call(
-        FnContext(fn=_load_tf_and_infer_with_dummy, args=(model_path,), exec_context="spawn", warm_up=_lazy_tf_load,
-                  cwd=cwd))
-
-
-TYPE2FUNC: Dict[Format, Callable[[str, Union[str, Path]], List[Union[Syscall, Signal]]]] = {
-    Format.PICKLE: load_pickle,
-    Format.PYTORCH: load_pytorch,
-    Format.DILL: load_dill,
-    Format.JOBLIB: load_joblib,
-    Format.CLOUDPICKLE: load_cloudpickle,
-    Format.KERAS: load_keras,
-    Format.KERASv2: load_keras_v2,
-    Format.KERASv3: load_keras_v3,
-    Format.NUMPY: load_numpy,
-    Format.SAVED_MODEL: load_tf_saved_model,
-    Format.UNKNOWN: lambda *args, **kwargs: [],
-}
-
-
-def load_model(model_path: str, cwd: Optional[Union[str, Path]] = None) -> List[Union[Syscall, Signal]]:
+def load_model(model_path: str, cwd: Optional[Union[str, Path]] = None) -> List[
+    Union[Syscall, Signal]]:
     model_type: Format = get_type(model_path)
     cwd = Path(cwd).absolute() if cwd is not None else Path(model_path).parent.absolute()
-    return TYPE2FUNC[model_type](model_path, cwd)
+    return _load_model(model_path, cwd, model_type)
 
 
 # ================================ Type detection ======================================================
-
 def is_pytorch(model_path: str) -> bool:
-    # some models with .bin may be raw pickle files
-    if not is_pickle(model_path) and model_path.endswith((".bin", ".pt", ".pth", ".ckpt")):
-        return True
-
-    import zipfile
-    if zipfile.is_zipfile(model_path):
+    if _is_zip(model_path):
         try:
             with zipfile.ZipFile(model_path) as zf:
                 names = zf.namelist()
-                # Typical TorchScript markers
+                # Typical Torch and TorchScript markers
                 has_data_pkl = any(n.endswith("/data.pkl") or n == "data.pkl" for n in names)
                 has_constants = any(n.endswith("/constants.pkl") or n == "constants.pkl" for n in names)
                 has_version = any(n.endswith("/version") or n == "version" for n in names)
                 has_code_dir = any(n.startswith("code/") for n in names)
-                if (has_data_pkl and has_version) or (has_constants and has_version) or (
-                        has_code_dir and (has_data_pkl or has_constants)):
+                if (has_data_pkl or has_constants) and (has_version or has_code_dir):
                     return True
         except Exception as e:
             logger.error(f"Failed to load {model_path} as zipfile: {e}", exc_info=True)
@@ -232,7 +201,7 @@ def is_pytorch(model_path: str) -> bool:
 
 
 def is_keras(model_path: str) -> bool:
-    return not is_pickle(model_path) and model_path.endswith((".keras", ".h5", ".hdf5", ".hdf", ".h5py"))
+    return not is_pickle(model_path) and model_path.endswith((".keras", ".h5", ".hdf5"))
 
 
 def is_keras_v2(model_path: str) -> bool:
@@ -245,10 +214,9 @@ def is_keras_v3(model_path: str) -> bool:
 
 def _get_keras_version(model_path: str) -> Literal[-1, 2, 3]:
     if model_path.endswith(".keras"):
-        import zipfile
-        return 3 if zipfile.is_zipfile(model_path) else 2
+        return 3 if _is_zip(model_path) else 2
 
-    if model_path.endswith((".h5", ".hdf5", ".hdf", ".h5py")):
+    if model_path.endswith((".h5", ".hdf5")):
         import h5py, re
         try:
             with h5py.File(model_path, "r") as f:
@@ -268,79 +236,79 @@ def _get_keras_version(model_path: str) -> Literal[-1, 2, 3]:
 
 
 def is_pickle(model_path: str) -> bool:
-    if model_path.endswith((".pickle", ".p", ".pkl", ".pk")):
-        return True
     try:
-        with open(model_path, "rb") as fh:
-            b0 = fh.read(1)
-            if b0 != b"\x80":
-                return False
-            b1 = fh.read(1)
-            return len(b1) == 1 and 1 <= b1[0] <= 5
+        head = _read_prefix(model_path, 2)
+        return len(head) == 2 and head[0] == 0x80 and 0 <= head[1] <= 5
     except Exception as e:
-        logger.error(f"Failed to verify if file is pickle: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify pickle: {model_path}: {e}", exc_info=True)
     return False
 
 
 def is_dill(model_path: str) -> bool:
-    if model_path.endswith((".dill",)):
-        return True
     try:
-        with open(model_path, "rb") as fh:
-            header = fh.read(512)
-        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
+        header = _read_prefix(model_path)
+        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
             return b"dill._dill" in header
     except Exception as e:
-        logger.error(f"Failed to verify if file is dill: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify dill: {model_path}: {e}", exc_info=True)
 
     return False
 
 
 def is_cloudpickle(model_path: str) -> bool:
     try:
-        with open(model_path, "rb") as fh:
-            header = fh.read(512)
-        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
-            return b"cloudpickle.cloudpickle" in header
+        header = _read_prefix(model_path)
+        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
+            return b"cloudpickle.cloudpickle" in header or b"cloudpickle_fast" in header
     except Exception as e:
-        logger.error(f"Failed to verify if file is cloudpickle: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify cloudpickle: {model_path}: {e}", exc_info=True)
 
     return False
 
 
 def is_joblib(model_path: str):
-    if model_path.endswith((".joblib",)):
-        return True
     try:
-        with open(model_path, "rb") as fh:
-            header = fh.read(1024)
-        if header[:2] in [b"\x80\x04", b"\x80\x05"]:
-            return b"joblib" in header
+        header = _read_prefix(model_path)
+        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
+            return (b"joblib" in header or
+                    b"numpy_pickle" in header or
+                    b"joblib.numpy_pickle" in header)
     except Exception as e:
-        logger.error(f"Failed to verify if file is joblib: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify joblib: {model_path}: {e}", exc_info=True)
 
     return False
 
 
+# this check is enough because an .npz without any 
 def is_numpy(model_path: str):
-    if not is_pickle(model_path) and model_path.endswith((".npy", ".npz",)):
-        return True
+    numpy_magic = b"\x93NUMPY"
+    # see: https://numpy.org/devdocs/reference/generated/numpy.lib.format.html#format-version-1-0
     try:
-        with open(model_path, "rb") as f:
-            magic = f.read(8)
-            return magic.startswith(b"\x93NUMPY")
+        if _is_zip(model_path):
+            try:
+                with zipfile.ZipFile(model_path) as zf:
+                    for n in zf.namelist():
+                        if zf.open(n, mode="r").read(6) != numpy_magic:
+                            return False
+                    return True
+            except zipfile.BadZipFile as e:
+                logger.error(f"Failed to verify numpy archive: {model_path}: {e}", exc_info=True)
+                return False
+
+        header = _read_prefix(model_path, 6)
+        return header == numpy_magic
     except Exception as e:
-        logger.error(f"Failed to verify if the file is numpy: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify : {model_path}: {e}", exc_info=True)
 
     return False
 
 
+# this check is sufficient because tensorflow won't be able to load the model if none of the files is present
 def is_tf_saved_model(folder_path: str):
-    import os
-
     if not os.path.isdir(folder_path):
         return False
 
+    # see: https://www.tensorflow.org/guide/saved_model#the_savedmodel_format_on_disk
     return os.path.isfile(os.path.join(folder_path, "saved_model.pb"))
 
 
@@ -354,37 +322,71 @@ def _lazy_tf_load() -> None:
     tf.config.set_visible_devices([], "GPU")
 
 
-def _lazy_keras_v2_load() -> None:
-    _lazy_tf_load()
-    import tf_keras
-    _ = tf_keras.models.load_model
+# ======== Helper function =============================================================================
+def _call_with_markers(markers, func, *args, **kwargs):
+    # Emit start marker before the call to be traced (the signal is emitted twice for robustness)
+    logger.info(f"Tracing {func.__module__}.{func.__qualname__}() ...")
+
+    markers["start"]()
+    markers["start"]()
+
+    try:
+        res = func(*args, **kwargs)
+    except Exception as e:
+        logger.error("Exception raised while tracing function `%s`: %r", func.__qualname__, e, exc_info=True)
+        res = None
+
+    # Emit end marker after the call (the signal is emitted twice for robustness)
+    markers["end"]()
+    markers["end"]()
+
+    return res
 
 
-def _lazy_dill_load() -> None:
-    import dill
-    _ = dill.load
+def _is_zip(path: str) -> bool:
+    try:
+        return zipfile.is_zipfile(path)
+    except:
+        return False
 
 
-def _lazy_joblib_load() -> None:
-    import joblib
-    _ = joblib.load
+def _read_prefix(path: str, n: int = 4096) -> bytes:
+    """Read up to n bytes from a regular file."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(n)
+    except Exception as e:
+        logger.error("Failed opening %s: %r", path, e, exc_info=True)
+        return b""
 
 
-def _lazy_torch_load() -> None:
-    import torch
-    _ = torch.load
+def _load_pickle_imports(model_path: str) -> None:
+    import pickletools
+    module_list = []
 
+    def _read_modules(bstream, modules: list):
+        for opcode, arg, pos in pickletools.genops(bstream):
+            # GLOBAL opcode arg is a tuple (module_name, global_name)
+            if opcode.name == "GLOBAL":
+                module_name = arg.split(" ")[0]
+                try:
+                    __import__(module_name)
+                except ModuleNotFoundError as err:
+                    logger.error(f"Failed to import {module_name}: {err}")
+                if module_name not in modules:
+                    modules.append(module_name)
 
-def _lazy_pickle_load() -> None:
-    import pickle
-    _ = pickle.load
+    try:
+        if is_pytorch(model_path):
+            with zipfile.ZipFile(model_path) as zf:
+                for name in zf.namelist():
+                    if name.endswith("/data.pkl"):
+                        with zf.open(name) as pickle_file:
+                            _read_modules(pickle_file.read(), module_list)
+        else:
+            with open(model_path, "rb") as f:
+                data = f.read()
+                _read_modules(data, module_list)
 
-
-def _lazy_numpy_load() -> None:
-    import numpy
-    _ = numpy.load
-
-
-def _lazy_cloudpickle_load() -> None:
-    import cloudpickle
-    _ = cloudpickle.load
+    except Exception as e:
+        logger.error(f"Failed to read globals from {model_path}: {e}", exc_info=True)

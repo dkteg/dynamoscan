@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 
 from dynamoscan import scanner
-from tests.utils.pytorch_injector import PyTorchPayloadInjector
 from tests.utils.malicious_payload import EXPECTED_CATEGORY
+from tests.utils.pytorch_injector import PyTorchPayloadInjector
 
 
 class LinearModel(nn.Module):

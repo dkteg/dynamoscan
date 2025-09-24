@@ -88,5 +88,5 @@ class CallOnUnpickle:
 
     detected_categories = {det["category"] for det in report.get("detections", [])}
     assert ("execution" in detected_categories) and ("console_write" in detected_categories), (
-        f"expected execution/file_write in detections, got: {detected_categories}"
+        f"expected execution and console_write in detections, got: {detected_categories}"
     )

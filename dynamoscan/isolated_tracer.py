@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
-from typing import List, Union, Any
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple, Union, Any
 
-from ._types import FnContext
-from ._types import Syscall, Signal
+from ._types import ModelLoader, Signal, Syscall
 
 logger = logging.getLogger("tracer")
 
@@ -19,7 +20,7 @@ class Tracer:
     start_marker_ext = ".dummy.start"
     end_marker_ext = ".dummy.end"
 
-    def __init__(self, fn: FnContext):
+    def __init__(self, fn: ModelLoader):
         self.trace: List[Union[Syscall, Signal]] = []
         self._trace_file: Optional[str] = None
         self.fn = fn
@@ -41,14 +42,14 @@ class Tracer:
     def __exit__(self, exec_type, exec_value, traceback) -> None:
         # wait for process to complete
         if self._proc is not None:
-            timeout = 15 if self.fn.exec_context == "fork" else 60
+            timeout = 15 if self.fn.exec_context == "fork" else 30
             self._proc.join(timeout=timeout)
             if self._proc.exitcode is None:  # child process hasn't exited yet. This is suspicious. Kill -> manual check
                 self._proc.terminate()
 
         try:
             with open(self._trace_file, "r") as f:
-                self.trace = splice_trace(
+                self.trace = _slice_trace(
                     parse_strace(f),
                     self._trace_file + self.start_marker_ext,
                     self._trace_file + self.end_marker_ext,
@@ -67,26 +68,30 @@ class Tracer:
 
 
 def _attach_strace(
-        fn: FnContext,
+        fn: ModelLoader,
         trace_file: str,
         start_marker_ext: str,
         end_marker_ext: str,
         timeout: int = 10
 ) -> None:
     # preload any required library to avoid noise in the system calls
-    if fn.warm_up is not None:
-        fn.warm_up()
+    if fn.warmup:
+        if fn.warmup_args:
+            fn.warmup(*fn.warmup_args)
+        else:
+            fn.warmup()
 
     # change to configured cwd
     if fn.cwd is not None and os.path.isdir(fn.cwd):
         os.chdir(fn.cwd)
         sys.path.insert(0, str(fn.cwd))
+        # import_all_modules_in_dir(fn.cwd)
 
-    err = None
     try:
         pid = os.getpid()
 
-        cmd = ["strace", "--quiet=attach,exit", "-f", "-T", "-ttt", "-s", "4096", "-o", trace_file, "-p", str(pid), ]
+        cmd = ["strace", "--quiet=attach,exit", "-f", "-T", "-y", "-ttt", "-s", "4096", "-o", trace_file, "-p",
+               str(pid), ]
         _ = subprocess.Popen(cmd)
 
         # Wait for strace to hook and file to appear
@@ -94,32 +99,25 @@ def _attach_strace(
             logger.error("strace failed to attach within %ss", timeout)
             return
 
-        time.sleep(0.1)
-
-        logger.info(f"Tracing {fn.name()}...")
-        # Emit start marker  before the call to be traced (the signal is emitted twice for robustness)
-        for _ in range(2):
+        def _mark_start():
             try:
                 os.stat(trace_file + start_marker_ext)
             except:
                 pass
-            time.sleep(0.1)
 
-        # actual call
-        try:
-            _ = fn.call()
-        except Exception as e:
-            err = e
-
-        # Emit end marker after the call (the signal is emitted twice for robustness)
-        for _ in range(2):
+        def _mark_end():
             try:
                 os.stat(trace_file + end_marker_ext)
             except:
                 pass
 
-        if err is not None:
-            logger.error("Exception raised while tracing function `%s`: %r", fn.name(), err, exc_info=True)
+        markers = {
+            "start": _mark_start,
+            "end": _mark_end,
+        }
+
+        fn.call(markers)
+
     finally:
         sys.exit(0)
 
@@ -141,7 +139,7 @@ def _wait_attached(pid: int, timeout: float = 3.0) -> bool:
     return False
 
 
-def splice_trace(
+def _slice_trace(
         trace: List[Union[Syscall, Signal]],
         start_marker: str,
         end_marker: str,
@@ -164,11 +162,6 @@ def splice_trace(
     else:
         print("Failed to find start and end markers syscalls in the trace, returning the full trace.")
         return trace
-
-
-import re
-from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Union
 
 
 def parse_strace(f) -> List[Union[Syscall, Signal]]:

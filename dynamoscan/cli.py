@@ -31,6 +31,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="Print trace to stdout.")
     parser.add_argument("--no-print-res", dest="print_res", action="store_false",
                         help="Disable human-readable report printing.")
+    parser.add_argument("--overwrite", dest="overwrite", action="store_true",
+                        help="Overwrite existing trace file i.e. rescan even if trace_file present.")
 
     args = parser.parse_args(argv)
 
@@ -43,6 +45,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print_res=args.print_res,
         trace_file=args.trace_file,
         print_trace=args.print_trace,
+        overwrite=args.overwrite,
         cwd=cwd,
     )
 

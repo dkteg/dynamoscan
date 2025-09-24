@@ -9,6 +9,7 @@ from typing import Any, Dict, Tuple
 
 from .ml_loader import load_model
 from .syscall_analyzer import SyscallSecurityAnalyzer
+from .utils import TraceSerializer
 
 logger = logging.getLogger("dynamoscan")
 
@@ -18,29 +19,33 @@ def scan(
         report_file: str | None = None,
         print_res: bool = True,
         trace_file: str | None = None,
+        overwrite: bool = False,
         print_trace: bool = False,
         cwd: Path | None = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     _ensure_prereqs()
     try:
-        trace = load_model(str(model_path), cwd=cwd)
-
-        if trace_file is not None:
-            with open(trace_file, "w") as f:
-                f.write("\n".join(str(event) for event in trace))
+        if trace_file and os.path.exists(trace_file) and not overwrite:
+            logger.info("Analyzing already existing trace file: %s", trace_file)
+            trace = TraceSerializer.load(trace_file)
+        else:
+            logger.info("Analyzing loaded model...")
+            trace = load_model(str(model_path), cwd=cwd)
+            if trace_file:
+                TraceSerializer.dump(trace, trace_file)
 
         if print_trace:
             print("\n".join(str(event) for event in trace))
 
-        analyzer = SyscallSecurityAnalyzer(trace)
+        analyzer = SyscallSecurityAnalyzer(trace, str(Path(model_path).absolute()))
 
-        if report_file is not None:
+        if report_file:
             analyzer.save_report(report_file)
 
         if print_res:
             analyzer.print_report()
 
-        return analyzer.get_number_of_detections() == 0, analyzer.get_report()
+        return analyzer.number_of_threats() == 0, analyzer.get_report()
 
     except Exception as e:
         logger.error(f"Tracing failed for {model_path}: {e}")

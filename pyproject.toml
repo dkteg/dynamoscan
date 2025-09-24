@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynamoscan"
-version = "0.0.1"
+version = "0.0.2"
 description = "A dynamic scanner Python module to detect suspicious system calls"
 authors = [
     { name = "Dimitri K. Teguia", email = "mail@dkteg.de" }
@@ -18,10 +18,16 @@ classifiers = [
 dependencies = [
     "torch>=2.7.1",
     "tensorflow-cpu>=2.20.0",
-    "tf-keras>=2.20.0",
-    "dill>=0.4.0",
+    "tf-keras>=2.20.1",
+    "dill>=0.3.0",
     "joblib>=1.5.2",
-    "cloudpickle>=3.1.1",
+    "cloudpickle>=3.1.1", # hugging face core libraries
+    "transformers>=4.56.1",
+    "accelerate>=1.10.1",
+    "tokenizers>=0.22.1",
+    "ultralytics>=8.3.202",
+    "diffusers>=0.35.1",
+    "orjson>=3.11.3",
     "pytest>=8.4.2"
 ]
 
