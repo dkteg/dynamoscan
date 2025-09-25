@@ -198,7 +198,8 @@ def is_pytorch(model_path: str) -> bool:
                 if (has_data_pkl or has_constants) and (has_version or has_code_dir):
                     return True
         except Exception as e:
-            logger.error(f"Failed to load {model_path} as zipfile: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+            logger.error("Failed to load %s as zipfile: %r", model_path, e,
+                         exc_info=logger.isEnabledFor(logging.DEBUG))
     return False
 
 
@@ -232,7 +233,7 @@ def _get_keras_version(model_path: str) -> Literal[-1, 2, 3]:
                 if re.match(r"^3\.", version):
                     return 3
         except Exception as e:
-            logger.debug("H5 read failed while checking keras_version: %r", e)
+            logger.debug("H5 read failed while checking keras_version: %r", e, exc_info=True)
             return -1
     return -1
 
@@ -244,7 +245,8 @@ def is_pickle(model_path: str) -> bool:
             return True
         return _has_valid_opcodes(model_path)
     except Exception as e:
-        logger.error(f"Failed to verify pickle: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to verify pickle: %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
     return False
 
 
@@ -254,7 +256,8 @@ def is_dill(model_path: str) -> bool:
             header = _read_prefix(model_path)
             return b"dill._dill" in header
     except Exception as e:
-        logger.error(f"Failed to verify dill: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to verify dill: %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -265,7 +268,8 @@ def is_cloudpickle(model_path: str) -> bool:
             header = _read_prefix(model_path)
             return b"cloudpickle.cloudpickle" in header or b"cloudpickle_fast" in header
     except Exception as e:
-        logger.error(f"Failed to verify cloudpickle: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to verify cloudpickle: %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -278,12 +282,13 @@ def is_joblib(model_path: str):
                     b"numpy_pickle" in header or
                     b"joblib.numpy_pickle" in header)
     except Exception as e:
-        logger.error(f"Failed to verify joblib: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to verify joblib: %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
 
-# this check is enough because an .npz without any 
+# this check is enough because an .npz without any
 def is_numpy(model_path: str):
     numpy_magic = b"\x93NUMPY"
     # see: https://numpy.org/devdocs/reference/generated/numpy.lib.format.html#format-version-1-0
@@ -296,14 +301,15 @@ def is_numpy(model_path: str):
                             return False
                     return True
             except zipfile.BadZipFile as e:
-                logger.error(f"Failed to verify numpy archive: {model_path}: {e}",
+                logger.error("Failed to verify numpy archive: %s: %r", model_path, e,
                              exc_info=logger.isEnabledFor(logging.DEBUG))
                 return False
 
         header = _read_prefix(model_path, 6)
         return header == numpy_magic
     except Exception as e:
-        logger.error(f"Failed to verify : {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to verify numpy: %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -330,7 +336,8 @@ def _lazy_tf_load() -> None:
 # ======== Helper function =============================================================================
 def _call_with_markers(markers, func, *args, **kwargs):
     # Emit start marker before the call to be traced (the signal is emitted twice for robustness)
-    logger.info(f"Tracing {func.__module__}.{func.__qualname__}() ...")
+    logger.info("Tracing %s.%s() ...", func.__module__, func.__qualname__)
+    err = None
 
     markers["start"]()
     markers["start"]()
@@ -338,14 +345,17 @@ def _call_with_markers(markers, func, *args, **kwargs):
     try:
         res = func(*args, **kwargs)
     except Exception as e:
-        logger.error("Exception raised while tracing function `%s`: %r", func.__qualname__, e,
-                     exc_info=logger.isEnabledFor(logging.DEBUG))
+        err = e
         res = None
 
     # Emit end marker after the call (the signal is emitted twice for robustness)
     markers["end"]()
     markers["end"]()
 
+    if err:
+        logger.error("Exception raised while tracing function `%s.%s`: %r",
+                     func.__module__, func.__qualname__, err,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
     return res
 
 
@@ -374,12 +384,12 @@ def _has_valid_opcodes(model_path: str) -> bool:
         if not pickled_data:
             return False
 
-        # Try to generate opcodes
         pickle_stream = io.BytesIO(pickled_data)
         opcodes_found = False
 
         try:
-            for opcode in pickletools.genops(pickle_stream):
+            # Try to generate opcodes
+            for _ in pickletools.genops(pickle_stream):
                 opcodes_found = True
                 break
         except:
@@ -401,7 +411,8 @@ def _load_pickle_imports(model_path: str) -> None:
                 try:
                     __import__(module_name)
                 except ModuleNotFoundError as err:
-                    logger.error(f"Failed to import {module_name}: {err}")
+                    logger.error("Failed to import %s: %r", module_name, err,
+                                 exc_info=logger.isEnabledFor(logging.DEBUG))
                 if module_name not in modules:
                     modules.append(module_name)
 
@@ -418,4 +429,5 @@ def _load_pickle_imports(model_path: str) -> None:
                 _read_modules(data, module_list)
 
     except Exception as e:
-        logger.error(f"Failed to read globals from {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        logger.error("Failed to read globals from %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))

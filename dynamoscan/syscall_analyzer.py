@@ -47,13 +47,13 @@ class Severity(IntEnum):
 
 
 _TMP_REMOTE_RE = re.compile(r"^/tmp/[^/\n]+/_remote_module_non_scriptable\.py$")
-_TMP_PYC_RE = re.compile(r"^/tmp/(?:/[^/\n]+)*/__pycache__/[^/\n]+\.cpython-3\d{1,2}(?:\.opt-\d+)?\.pyc(?:\.\d+)?$")
+_PYC_RE = re.compile(r"(?:^|[\\/])__pycache__[\\/][^/\\]+\.cpython-3\d{1,2}(?:\.opt-[12])?\.pyc(?:\.[^/\\]+)?$")
 
 
-def _is_allowed_tmp(path: str) -> bool:
+def _is_allowed_write(path: str) -> bool:
     if not path:
         return False
-    return bool(_TMP_REMOTE_RE.match(path) or _TMP_PYC_RE.match(path))
+    return bool(_TMP_REMOTE_RE.match(path) or _PYC_RE.search(path))
 
 
 def _path_is_under(path: str, root: str) -> bool:
@@ -286,9 +286,6 @@ class SyscallSecurityAnalyzer:
         logging.getLogger("SyscallSecurityAnalyzer")
         self.model_path = model_path
         self.model_dir = None
-        self.read_allow_prefixes: List[str] = []  # kept for future use
-        self._build_read_allowlist()  # not used by denylist, harmless to keep
-
         self._trace_len = len(trace)
         self._signals_ignored = 0
         self.fd_table: Dict[tuple[str, str], Dict[str, Any]] = {}
@@ -306,47 +303,6 @@ class SyscallSecurityAnalyzer:
         self._counts_by_severity: Dict[str, int] = {s.name: 0 for s in Severity}
 
         self._run_analysis(trace)
-
-    # ----------------------------
-    # Allow-list construction (unused for denylist-only reads; retained for future use)
-    # ----------------------------
-
-    def _build_read_allowlist(self):
-        try:
-            if not self.model_path:
-                return
-            mp = os.path.realpath(self.model_path)
-            if os.path.isdir(mp):
-                self.model_dir = mp
-                self.read_allow_prefixes.append(mp)
-            else:
-                self.model_dir = os.path.dirname(mp)
-                self.read_allow_prefixes.append(mp)
-                self.read_allow_prefixes.append(self.model_dir)
-
-            baseline_prefixes = [
-                "/proc/",
-                "/dev/urandom",
-                "/etc/ld.so.cache",
-                "/etc/ld.so.conf",
-                "/etc/ld.so.conf.d/",
-                "/usr/lib/",
-                "/sys/",
-                "/tmp/",
-            ]
-            if self.model_dir:
-                baseline_prefixes.append(self.model_dir)
-
-            seen = set()
-            out = []
-            for p in baseline_prefixes:
-                rp = os.path.realpath(p) if p.startswith("/") else p
-                if rp not in seen:
-                    out.append(rp)
-                    seen.add(rp)
-            self.read_allow_prefixes.extend(out)
-        except Exception as e:
-            logger.debug(f"allow-list build error: {e}")
 
     # ----------------------------
     # Utility helpers
@@ -419,7 +375,7 @@ class SyscallSecurityAnalyzer:
     def _classify_write_path(self, path: Optional[str]) -> Severity:
         if not path:
             return Severity.SUSPICIOUS
-        if _is_allowed_tmp(path):
+        if _is_allowed_write(path):
             return Severity.INFO
         # Consider some paths inherently sensitive for writes (reuse existing heuristics)
         if path and ("/.ssh/" in path or "/.gnupg/" in path or path.startswith("/etc/")):
@@ -493,7 +449,7 @@ class SyscallSecurityAnalyzer:
                 self._maybe_learn_fd_from_annotation(pid, fd, ann)
 
         except Exception as e:
-            logger.debug(f"FD tracking error on {sc}: {e}")
+            logger.debug("FD tracking error on %s %r", sc, e, exc_info=True)
 
     # ----------------------------
     # Detection logic
@@ -673,7 +629,7 @@ class SyscallSecurityAnalyzer:
 
         if dest_info.get("kind") in ("pipe", "socket", "eventfd", "memfd", "anon", "unknown"):
             return False
-        if dest_path and _is_allowed_tmp(dest_path):
+        if dest_path and _is_allowed_write(dest_path):
             return False
 
         sev = self._classify_write_path(dest_path)
@@ -717,7 +673,7 @@ class SyscallSecurityAnalyzer:
         try:
             m = re.search(r'"([^"]+)"', sc.args)
             path = m.group(1) if m else None
-            if path and _is_allowed_tmp(path):
+            if path and _is_allowed_write(path):
                 return False
         except Exception:
             pass
@@ -856,7 +812,7 @@ class SyscallSecurityAnalyzer:
                 else:
                     self._signals_ignored += 1
             except Exception as e:
-                logger.error(f"Analyzer error on {ev}: {e}")
+                logger.error(f"Analyzer error on %s %r", ev, e, exc_info=logger.isEnabledFor(logging.DEBUG))
         logger.info("Analysis complete.")
 
     # ----------------------------
@@ -888,7 +844,7 @@ class SyscallSecurityAnalyzer:
                 json.dump(self.get_report(), f, indent=4)
             logger.info(f"Report saved to {filename}")
         except Exception as e:
-            logger.error(f"Failed to save report: {e}")
+            logger.error("Failed to save report: %r", e, exc_info=logger.isEnabledFor(logging.DEBUG))
 
     def print_report(self, include_info: bool = False):
         report = self.get_report()

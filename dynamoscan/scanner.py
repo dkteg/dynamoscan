@@ -48,8 +48,7 @@ def scan(
         return analyzer.number_of_threats() == 0, analyzer.get_report()
 
     except Exception as e:
-        logger.error(f"Tracing failed for {model_path}: {e}")
-        logger.debug(traceback.format_exc())
+        logger.error("Tracing failed for %s: %r", model_path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False, {}
 
@@ -87,7 +86,7 @@ def _ensure_prereqs() -> None:
         with open(ptrace_scope_path, "r") as f:
             value = f.read().strip()
     except Exception as e:
-        logger.error(f"Could not read {ptrace_scope_path}: {e}")
+        logger.error("Could not read %s %r", ptrace_scope_path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
         raise SystemExit(1)
 
     if value != "0":
