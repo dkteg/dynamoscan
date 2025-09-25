@@ -74,18 +74,17 @@ def _attach_strace(
         end_marker_ext: str,
         timeout: int = 10
 ) -> None:
+    # change to configured cwd
+    if fn.cwd is not None and os.path.isdir(fn.cwd):
+        os.chdir(fn.cwd)
+        sys.path.insert(0, str(fn.cwd))
+
     # preload any required library to avoid noise in the system calls
     if fn.warmup:
         if fn.warmup_args:
             fn.warmup(*fn.warmup_args)
         else:
             fn.warmup()
-
-    # change to configured cwd
-    if fn.cwd is not None and os.path.isdir(fn.cwd):
-        os.chdir(fn.cwd)
-        sys.path.insert(0, str(fn.cwd))
-        # import_all_modules_in_dir(fn.cwd)
 
     try:
         pid = os.getpid()
