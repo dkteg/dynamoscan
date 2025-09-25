@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import logging
+import pickletools
 import os
 import zipfile
 from enum import Enum
@@ -237,8 +239,10 @@ def _get_keras_version(model_path: str) -> Literal[-1, 2, 3]:
 
 def is_pickle(model_path: str) -> bool:
     try:
-        head = _read_prefix(model_path, 2)
-        return len(head) == 2 and head[0] == 0x80 and 0 <= head[1] <= 5
+        header = _read_prefix(model_path, 2)
+        if len(header) >= 2 and header[0] == 0x80 and 0 <= header[1] <= 5:
+            return True
+        return _has_valid_opcodes(model_path)
     except Exception as e:
         logger.error(f"Failed to verify pickle: {model_path}: {e}", exc_info=True)
     return False
@@ -246,8 +250,8 @@ def is_pickle(model_path: str) -> bool:
 
 def is_dill(model_path: str) -> bool:
     try:
-        header = _read_prefix(model_path)
-        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
+        if is_pickle(model_path):
+            header = _read_prefix(model_path)
             return b"dill._dill" in header
     except Exception as e:
         logger.error(f"Failed to verify dill: {model_path}: {e}", exc_info=True)
@@ -257,8 +261,8 @@ def is_dill(model_path: str) -> bool:
 
 def is_cloudpickle(model_path: str) -> bool:
     try:
-        header = _read_prefix(model_path)
-        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
+        if is_pickle(model_path):
+            header = _read_prefix(model_path)
             return b"cloudpickle.cloudpickle" in header or b"cloudpickle_fast" in header
     except Exception as e:
         logger.error(f"Failed to verify cloudpickle: {model_path}: {e}", exc_info=True)
@@ -268,8 +272,8 @@ def is_cloudpickle(model_path: str) -> bool:
 
 def is_joblib(model_path: str):
     try:
-        header = _read_prefix(model_path)
-        if len(header) >= 2 and header[:2] in [b"\x80\x04", b"\x80\x05"]:
+        if is_pickle(model_path):
+            header = _read_prefix(model_path)
             return (b"joblib" in header or
                     b"numpy_pickle" in header or
                     b"joblib.numpy_pickle" in header)
@@ -360,8 +364,31 @@ def _read_prefix(path: str, n: int = 4096) -> bytes:
         return b""
 
 
+def _has_valid_opcodes(model_path: str) -> bool:
+    try:
+        with open(model_path, "rb") as f:
+            pickled_data = f.read()
+
+        if not pickled_data:
+            return False
+
+        # Try to generate opcodes
+        pickle_stream = io.BytesIO(pickled_data)
+        opcodes_found = False
+
+        try:
+            for opcode in pickletools.genops(pickle_stream):
+                opcodes_found = True
+                break
+        except:
+            pass
+
+        return opcodes_found
+    except:
+        return False
+
+
 def _load_pickle_imports(model_path: str) -> None:
-    import pickletools
     module_list = []
 
     def _read_modules(bstream, modules: list):
