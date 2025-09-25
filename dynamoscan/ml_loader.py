@@ -198,7 +198,7 @@ def is_pytorch(model_path: str) -> bool:
                 if (has_data_pkl or has_constants) and (has_version or has_code_dir):
                     return True
         except Exception as e:
-            logger.error(f"Failed to load {model_path} as zipfile: {e}", exc_info=True)
+            logger.error(f"Failed to load {model_path} as zipfile: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
     return False
 
 
@@ -244,7 +244,7 @@ def is_pickle(model_path: str) -> bool:
             return True
         return _has_valid_opcodes(model_path)
     except Exception as e:
-        logger.error(f"Failed to verify pickle: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify pickle: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
     return False
 
 
@@ -254,7 +254,7 @@ def is_dill(model_path: str) -> bool:
             header = _read_prefix(model_path)
             return b"dill._dill" in header
     except Exception as e:
-        logger.error(f"Failed to verify dill: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify dill: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -265,7 +265,7 @@ def is_cloudpickle(model_path: str) -> bool:
             header = _read_prefix(model_path)
             return b"cloudpickle.cloudpickle" in header or b"cloudpickle_fast" in header
     except Exception as e:
-        logger.error(f"Failed to verify cloudpickle: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify cloudpickle: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -278,7 +278,7 @@ def is_joblib(model_path: str):
                     b"numpy_pickle" in header or
                     b"joblib.numpy_pickle" in header)
     except Exception as e:
-        logger.error(f"Failed to verify joblib: {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify joblib: {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -296,13 +296,14 @@ def is_numpy(model_path: str):
                             return False
                     return True
             except zipfile.BadZipFile as e:
-                logger.error(f"Failed to verify numpy archive: {model_path}: {e}", exc_info=True)
+                logger.error(f"Failed to verify numpy archive: {model_path}: {e}",
+                             exc_info=logger.isEnabledFor(logging.DEBUG))
                 return False
 
         header = _read_prefix(model_path, 6)
         return header == numpy_magic
     except Exception as e:
-        logger.error(f"Failed to verify : {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to verify : {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False
 
@@ -337,7 +338,8 @@ def _call_with_markers(markers, func, *args, **kwargs):
     try:
         res = func(*args, **kwargs)
     except Exception as e:
-        logger.error("Exception raised while tracing function `%s`: %r", func.__qualname__, e, exc_info=True)
+        logger.error("Exception raised while tracing function `%s`: %r", func.__qualname__, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
         res = None
 
     # Emit end marker after the call (the signal is emitted twice for robustness)
@@ -360,7 +362,7 @@ def _read_prefix(path: str, n: int = 4096) -> bytes:
         with open(path, "rb") as f:
             return f.read(n)
     except Exception as e:
-        logger.error("Failed opening %s: %r", path, e, exc_info=True)
+        logger.error("Failed opening %s: %r", path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
         return b""
 
 
@@ -416,4 +418,4 @@ def _load_pickle_imports(model_path: str) -> None:
                 _read_modules(data, module_list)
 
     except Exception as e:
-        logger.error(f"Failed to read globals from {model_path}: {e}", exc_info=True)
+        logger.error(f"Failed to read globals from {model_path}: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
