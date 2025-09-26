@@ -3,7 +3,6 @@ import logging
 import os
 import platform
 import shutil
-import traceback
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -34,23 +33,51 @@ def scan(
             if trace_file:
                 TraceSerializer.dump(trace, trace_file)
 
-        if print_trace:
-            print("\n".join(str(event) for event in trace))
-
-        analyzer = SyscallSecurityAnalyzer(trace, str(Path(model_path).absolute()))
-
-        if report_file:
-            analyzer.save_report(report_file)
-
-        if print_res:
-            analyzer.print_report()
-
-        return analyzer.number_of_threats() == 0, analyzer.get_report()
+        return _analyze_trace(trace, model_path, report_file, print_trace, print_res)
 
     except Exception as e:
         logger.error("Tracing failed for %s: %r", model_path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False, {}
+
+
+def scan_from_trace(
+        model_path: str | Path,
+        trace_file: str | None = None,
+        report_file: str | None = None,
+        print_res: bool = False,
+        print_trace: bool = False,
+) -> Tuple[bool, Dict[str, Any]]:
+    _ensure_prereqs()
+    try:
+        if not trace_file or not os.path.exists(trace_file):
+            return False, {}
+
+        logger.info("Reading trace file: %s...", trace_file)
+        trace = TraceSerializer.load(trace_file)
+
+        return _analyze_trace(trace, model_path, report_file, print_trace, print_res)
+
+    except Exception as e:
+        logger.error("Failed to read trace file %s: %r", model_path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
+
+    return False, {}
+
+
+def _analyze_trace(trace, model_path: str | Path, report_file: str | None, print_trace: bool, print_res: bool) -> tuple[
+    bool, Dict[str, Any]]:
+    if print_trace:
+        print("\n".join(str(event) for event in trace))
+
+    analyzer = SyscallSecurityAnalyzer(trace, str(Path(model_path).absolute()))
+
+    if report_file:
+        analyzer.save_report(report_file)
+
+    if print_res:
+        analyzer.print_report()
+
+    return analyzer.number_of_threats() == 0, analyzer.get_report()
 
 
 def _ensure_prereqs() -> None:
