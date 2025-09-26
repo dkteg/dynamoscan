@@ -129,6 +129,39 @@ def _normalize_annotation(ann: str) -> Tuple[str, str]:
 
 
 # ----------------------------
+# Allowlist for benign reads
+# ----------------------------
+ALLOWED_READ_PATTERNS = [
+    # POSIX: lib or lib64 + site/dist-packages
+    re.compile(r'(?:^|[\\/])(lib|lib64)[\\/]python3(?:\.\d{1,2})?[\\/](?:site|dist)-packages(?:[\\/]|$)'),
+    # Debian/Ubuntu dist-packages variants (covers /usr/lib/python3/dist-packages and /usr/local/...)
+    re.compile(r'(?:^|[\\/])python3(?:\.\d{1,2})?[\\/]?dist-packages(?:[\\/]|$)'),
+    re.compile(r'(?:^|[\\/])dist-packages(?:[\\/]|$)'),
+    # Generic site-packages (covers venvs and case variations)
+    re.compile(r'(?:^|[\\/])site-packages(?:[\\/]|$)', re.IGNORECASE),
+    # Windows: ...\Lib\site-packages
+    re.compile(r'(?:^|[\\/])Lib[\\/]site-packages(?:[\\/]|$)'),
+    # Standard library tree (lib or lib64)
+    re.compile(r'(?:^|[\\/])(lib|lib64)[\\/]python3(?:\.\d{1,2})?(?:[\\/]|$)'),
+]
+
+
+def _is_benign_lib_read(path: str) -> bool:
+    if not path:
+        return False
+    candidates = [path]
+    try:
+        candidates.append(os.path.realpath(path))
+    except Exception:
+        pass
+    for p in candidates:
+        for rx in ALLOWED_READ_PATTERNS:
+            if rx.search(p):
+                return True
+    return False
+
+
+# ----------------------------
 # Strict denylist for reads
 # ----------------------------
 
@@ -699,32 +732,40 @@ class SyscallSecurityAnalyzer:
         """Denylist-only read detection: only flag reads of paths matching sensitive patterns."""
         name = sc.name
 
+        def _emit_if_denylisted(fd: Optional[str], op_label: str) -> bool:
+            if not fd or not fd.isdigit():
+                return False
+            info = self._fd_get(sc.pid, fd)
+            if info.get("kind") != "file":
+                return False  # ignore non-files
+            path = info.get("path")
+            if _is_benign_lib_read(path):
+                return False
+            sev = _classify_denylisted_read(path)
+            if not sev:
+                return False
+            self._record(
+                "read",
+                sev,
+                name=sc.name,
+                call=_pretty_call(sc.name, sc.args, sc.retval),
+                pid=sc.pid,
+                fd=fd,
+                fd_path=path or "[unknown]",
+                retval=sc.retval,
+                timestamp=sc.timestamp,
+                summary=f"{op_label} ← {path or '[unknown]'}",
+            )
+            return True
+
         if name == "mmap":
-            prot = "PROT_" in (sc.args or "") and "PROT_READ" in sc.args
-            fd, ann = self._parse_fd_and_annot_at_index(sc.args or "", 4)  # 5th arg
+            args = sc.args or ""
+            prot = ("PROT_" in args) and ("PROT_READ" in args)
+            fd, ann = self._parse_fd_and_annot_at_index(args, 4)  # 5th arg
             self._maybe_learn_fd_from_annotation(sc.pid, fd, ann)
-            is_anon = "MAP_ANONYMOUS" in (sc.args or "") or (fd == "-1")
+            is_anon = ("MAP_ANONYMOUS" in args) or (fd == "-1")
             if prot and fd and fd.isdigit() and not is_anon:
-                src_info = self._fd_get(sc.pid, fd)
-                if src_info.get("kind") != "file":
-                    return False  # ignore non-files
-                path = src_info.get("path")
-                sev = _classify_denylisted_read(path)
-                if not sev:
-                    return False  # ignore non-denylisted reads
-                self._record(
-                    "read",
-                    sev,
-                    name=sc.name,
-                    call=_pretty_call(sc.name, sc.args, sc.retval),
-                    pid=sc.pid,
-                    fd=fd,
-                    fd_path=path or "[unknown]",
-                    retval=sc.retval,
-                    timestamp=sc.timestamp,
-                    summary=f"mmap(PROT_READ) ← {path or '[unknown]'}",
-                )
-                return True
+                return _emit_if_denylisted(fd, "mmap(PROT_READ)")
             return False
 
         if name in self.READ_SRC_FD_INDEX:
@@ -732,26 +773,7 @@ class SyscallSecurityAnalyzer:
             src_fd, src_ann = self._parse_fd_and_annot_at_index(sc.args or "", src_idx)
             src_fd = src_fd or "?"
             self._maybe_learn_fd_from_annotation(sc.pid, src_fd, src_ann)
-            src_info = self._fd_get(sc.pid, src_fd)
-            if src_info.get("kind") != "file":
-                return False  # ignore non-files
-            path = src_info.get("path")
-            sev = _classify_denylisted_read(path)
-            if not sev:
-                return False  # ignore non-denylisted reads
-            self._record(
-                "read",
-                sev,
-                name=sc.name,
-                call=_pretty_call(sc.name, sc.args, sc.retval),
-                pid=sc.pid,
-                fd=src_fd,
-                fd_path=path or "[unknown]",
-                retval=sc.retval,
-                timestamp=sc.timestamp,
-                summary=f"{name} ← {path or '[unknown]'}",
-            )
-            return True
+            return _emit_if_denylisted(src_fd, name)
 
         return False
 
