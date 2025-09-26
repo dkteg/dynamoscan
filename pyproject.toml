@@ -45,3 +45,4 @@ pythonpath = "."
 
 [project.scripts]
 dynamoscan = "dynamoscan.cli:main"
+dynamoscan-trace = "dynamoscan.cli_trace:main"
