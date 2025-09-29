@@ -143,6 +143,8 @@ ALLOWED_READ_PATTERNS = [
     re.compile(r'(?:^|[\\/])Lib[\\/]site-packages(?:[\\/]|$)'),
     # Standard library tree (lib or lib64)
     re.compile(r'(?:^|[\\/])(lib|lib64)[\\/]python3(?:\.\d{1,2})?(?:[\\/]|$)'),
+    # Added: egg-info directories or files inside site/dist-packages or anywhere else similar
+    re.compile(r'(?:^|[\\/])[^\\/]+\.egg-info(?:[\\/]|$)', re.IGNORECASE),
 ]
 
 
