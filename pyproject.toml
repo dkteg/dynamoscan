@@ -27,6 +27,7 @@ dependencies = [
     "tokenizers==0.21.0",
     "ultralytics==8.3.202",
     "pyannote-audio==3.4.0",
+    "deepspeed==0.17.6",
     "zshot==0.0.11",
     "gliner==0.2.22",
     "diffusers==0.35.1",
