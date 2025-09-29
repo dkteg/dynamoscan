@@ -42,7 +42,8 @@ class Tracer:
     def __exit__(self, exec_type, exec_value, traceback) -> None:
         # wait for process to complete
         if self._proc is not None:
-            timeout = 15 if self.fn.exec_context == "fork" else 30
+            # timeout = 120 if self.fn.exec_context == "fork" else 150
+            timeout = 600  # 10 minutes
             self._proc.join(timeout=timeout)
             if self._proc.exitcode is None:  # child process hasn't exited yet. This is suspicious. Kill -> manual check
                 self._proc.terminate()

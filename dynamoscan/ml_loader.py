@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import io
 import logging
-import pickletools
 import os
+import pickletools
 import zipfile
 from enum import Enum
 from pathlib import Path
@@ -11,6 +11,8 @@ from typing import Callable, List, Union, Literal, Optional
 
 from ._types import ModelLoader, Syscall, Signal
 from .isolated_tracer import Tracer
+
+from .utils import PickleModuleExtractor
 
 logger = logging.getLogger("ml_loader")
 
@@ -401,33 +403,29 @@ def _has_valid_opcodes(model_path: str) -> bool:
 
 
 def _load_pickle_imports(model_path: str) -> None:
-    module_list = []
-
-    def _read_modules(bstream, modules: list):
-        for opcode, arg, pos in pickletools.genops(bstream):
-            # GLOBAL opcode arg is a tuple (module_name, global_name)
-            if opcode.name == "GLOBAL":
-                module_name = arg.split(" ")[0]
-                try:
-                    __import__(module_name)
-                except ModuleNotFoundError as err:
-                    logger.error("Failed to import %s: %r", module_name, err,
-                                 exc_info=logger.isEnabledFor(logging.DEBUG))
-                if module_name not in modules:
-                    modules.append(module_name)
-
+    module_set = set()
     try:
         if is_pytorch(model_path):
             with zipfile.ZipFile(model_path) as zf:
                 for name in zf.namelist():
                     if name.endswith("/data.pkl"):
                         with zf.open(name) as pickle_file:
-                            _read_modules(pickle_file.read(), module_list)
+                            module_set = PickleModuleExtractor.list_modules(pickle_file)
         else:
             with open(model_path, "rb") as f:
-                data = f.read()
-                _read_modules(data, module_list)
+                module_set = PickleModuleExtractor.list_modules(f)
 
+        for module_name in module_set:
+            _try_import_module(module_name)
     except Exception as e:
         logger.error("Failed to read globals from %s: %r", model_path, e,
+                     exc_info=logger.isEnabledFor(logging.DEBUG))
+
+
+def _try_import_module(module_name: str):
+    try:
+        logger.debug(f"Importing `{module_name}`...")
+        __import__(module_name)
+    except ModuleNotFoundError as err:
+        logger.error("Failed to import %s: %r", module_name, err,
                      exc_info=logger.isEnabledFor(logging.DEBUG))
