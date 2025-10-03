@@ -4,7 +4,7 @@ import os
 import platform
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 
 from .ml_loader import load_model
 from .syscall_analyzer import SyscallSecurityAnalyzer
@@ -15,13 +15,29 @@ logger = logging.getLogger("dynamoscan")
 
 def scan(
         model_path: str | Path,
-        report_file: str | None = None,
+        report_file: Optional[str] = None,
         print_res: bool = True,
-        trace_file: str | None = None,
+        trace_file: Optional[str] = None,
         overwrite: bool = False,
         print_trace: bool = False,
-        cwd: Path | None = None,
+        cwd: Optional[Path] = None,
+        use_docker: bool = False,
+        docker_config: Optional[str] = None,
+        force_rebuild: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
+    if use_docker:
+        return _scan_with_docker(
+            model_path=model_path,
+            report_file=report_file,
+            print_res=print_res,
+            trace_file=trace_file,
+            overwrite=overwrite,
+            print_trace=print_trace,
+            cwd=cwd,
+            docker_config=docker_config,
+            force_rebuild=force_rebuild,
+        )
+
     _ensure_prereqs()
     try:
         if trace_file and os.path.exists(trace_file) and not overwrite:
@@ -62,6 +78,67 @@ def scan_from_trace(
         logger.error("Failed to read trace file %s: %r", model_path, e, exc_info=logger.isEnabledFor(logging.DEBUG))
 
     return False, {}
+
+
+def _scan_with_docker(
+        model_path: str | Path,
+        report_file: Optional[str],
+        print_res: bool,
+        trace_file: Optional[str],
+        print_trace: bool,
+        cwd: Optional[Path],
+        overwrite: bool,
+        docker_config: Optional[str],
+        force_rebuild: bool,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Execute scan using Docker isolation."""
+    from .docker_manager import DockerManager
+
+    try:
+        manager = DockerManager(docker_config)
+
+        # Build or check image
+        if force_rebuild or not manager.image_exists():
+            action = "Rebuilding" if force_rebuild else "Building"
+            logger.info(f"{action} Docker image...")
+            manager.build_image(force_rebuild=force_rebuild)
+        else:
+            logger.info("Using existing Docker image")
+
+        # Run scan in container
+        exit_code = manager.run_isolated_scan(
+            model_path=str(model_path),
+            trace_file=trace_file,
+            report_file=report_file,
+            cwd=str(cwd) if cwd else None,
+            print_trace=print_trace,
+            print_res=print_res,
+            overwrite=overwrite
+        )
+
+        if exit_code not in {0, 1, 2}:
+            return False, {"exit_code": exit_code}
+
+        # If report file was generated, load and return it
+        if report_file and Path(report_file).exists():
+            import json
+            with open(report_file, 'r') as f:
+                report = json.load(f)
+            is_safe = report.get('number_of_threats', 1) == 0
+            report['exit_code'] = exit_code
+            return is_safe, report
+
+        # If no report file, assume success based on exit code
+        return True, {"exit_code": exit_code}
+
+    except Exception as e:
+        logger.error(
+            "Docker scan failed for %s: %r",
+            model_path,
+            e,
+            exc_info=logger.isEnabledFor(logging.DEBUG)
+        )
+        return False, {"exit_code": 2}
 
 
 def _analyze_trace(trace, model_path: str | Path, report_file: str | None, print_trace: bool, print_res: bool) -> tuple[

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynamoscan"
-version = "0.0.2"
+version = "0.0.3"
 description = "A dynamic scanner Python module to detect suspicious system calls"
 authors = [
     { name = "Dimitri K. Teguia", email = "mail@dkteg.de" }
@@ -51,6 +51,11 @@ dependencies = [
     "clip @ git+https://github.com/openai/CLIP.git@main"
 ]
 
+[project.optional-dependencies]
+docker = [
+    "docker>=7.1.0",
+    "PyYAML>=6.0.3"
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
